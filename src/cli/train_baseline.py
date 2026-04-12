@@ -14,6 +14,7 @@ from src.evaluation.metrics import (
     build_confusion_matrix_frame,
     compute_classification_metrics,
 )
+from src.evaluation.plots import plot_confusion_matrix_heatmap
 from src.models.baseline import build_baseline_pipeline
 from src.utils.config import dump_yaml_config, load_yaml_config
 from src.utils.paths import ensure_dir, resolve_path
@@ -45,9 +46,51 @@ def _prepare_output_dirs(output_config: dict[str, Any]) -> dict[str, Path]:
     return {
         "metrics": ensure_dir(output_config.get("metrics_dir", "outputs/metrics")),
         "predictions": ensure_dir(output_config.get("predictions_dir", "outputs/predictions")),
+        "figures": ensure_dir(output_config.get("figures_dir", "outputs/figures")),
         "logs": ensure_dir(output_config.get("logs_dir", "outputs/logs")),
         "checkpoints": ensure_dir(output_config.get("checkpoints_dir", "outputs/checkpoints")),
     }
+
+
+def _get_model_type(model_config: dict[str, Any]) -> str:
+    return str(model_config.get("type", "logreg"))
+
+
+def _build_score_frame(pipeline: Any, texts: pd.Series) -> pd.DataFrame:
+    classifier = pipeline.named_steps["classifier"]
+
+    if hasattr(classifier, "predict_proba"):
+        probabilities = pipeline.predict_proba(texts)
+        return pd.DataFrame(
+            probabilities,
+            columns=[f"prob_{label}" for label in pipeline.classes_],
+        )
+
+    if hasattr(classifier, "decision_function"):
+        decisions = pipeline.decision_function(texts)
+        if getattr(decisions, "ndim", 1) == 1:
+            decisions = decisions.reshape(-1, 1)
+        return pd.DataFrame(
+            decisions,
+            columns=[f"score_{label}" for label in pipeline.classes_],
+        )
+
+    return pd.DataFrame(index=range(len(texts)))
+
+
+def _format_model_title(model_type: str) -> str:
+    title_map = {
+        "logreg": "LogReg",
+        "linear_svm": "Linear SVM",
+        "naive_bayes": "Naive Bayes",
+    }
+    return title_map.get(model_type, model_type.replace("_", " ").title())
+
+
+def _format_eval_title(model_type: str, train_path: str, eval_name: str) -> str:
+    train_domain = Path(train_path).parent.name.upper()
+    eval_title = eval_name.replace("_", " ").title()
+    return f"{_format_model_title(model_type)} | {train_domain} Train | {eval_title}"
 
 
 def _save_json(data: dict[str, Any], path: Path) -> None:
@@ -64,6 +107,7 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
     text_column = data_config.get("text_column", "text")
     label_column = data_config.get("label_column", "label")
     label_map = data_config.get("label_map", {})
+    model_type = _get_model_type(model_config)
 
     train_frame = load_labeled_csv(
         data_config["train_path"],
@@ -90,6 +134,7 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
 
     aggregate_metrics: dict[str, Any] = {
         "run_name": run_name,
+        "model_type": model_type,
         "train_size": int(len(train_frame)),
         "train_path": str(resolve_path(data_config["train_path"])),
         "config_path": config.get("_config_path"),
@@ -106,17 +151,13 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
             label_map=label_map,
         )
         predictions = pipeline.predict(eval_frame["text"])
-        probabilities = pipeline.predict_proba(eval_frame["text"])
-        probability_frame = pd.DataFrame(
-            probabilities,
-            columns=[f"prob_{label}" for label in pipeline.classes_],
-        )
+        score_frame = _build_score_frame(pipeline, eval_frame["text"])
 
         prediction_frame = pd.concat(
             [
                 eval_frame.reset_index(drop=True),
                 pd.DataFrame({"prediction": predictions}),
-                probability_frame.reset_index(drop=True),
+                score_frame.reset_index(drop=True),
             ],
             axis=1,
         )
@@ -133,11 +174,20 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
         metric_payload["prediction_path"] = str(prediction_path)
 
         confusion_path = output_dirs["metrics"] / f"{run_name}__{eval_name}_confusion_matrix.csv"
-        build_confusion_matrix_frame(
+        confusion_frame = build_confusion_matrix_frame(
             eval_frame["label"].tolist(),
             list(predictions),
-        ).to_csv(confusion_path, index=True)
+        )
+        confusion_frame.to_csv(confusion_path, index=True)
         metric_payload["confusion_matrix_path"] = str(confusion_path)
+
+        figure_path = output_dirs["figures"] / f"{run_name}__{eval_name}_confusion_matrix.png"
+        plot_confusion_matrix_heatmap(
+            confusion_frame,
+            _format_eval_title(model_type, data_config["train_path"], eval_name),
+            figure_path,
+        )
+        metric_payload["confusion_figure_path"] = str(figure_path)
 
         aggregate_metrics["eval_sets"][eval_name] = metric_payload
 
@@ -154,12 +204,14 @@ def main() -> None:
     results = run_experiment(config)
 
     print(f"Run: {results['run_name']}")
+    print(f"Model type: {results['model_type']}")
     print(f"Train size: {results['train_size']}")
     print(f"Metrics saved to: {results['metrics_path']}")
     for eval_name, payload in results["eval_sets"].items():
         print(
             f"[{eval_name}] accuracy={payload['accuracy']:.4f} "
-            f"macro_f1={payload['macro_f1']:.4f}"
+            f"macro_f1={payload['macro_f1']:.4f} "
+            f"weighted_f1={payload['weighted_f1']:.4f}"
         )
 
 

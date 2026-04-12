@@ -22,6 +22,7 @@ outputs/figures/*
 outputs/logs/*
 outputs/checkpoints/*
 outputs/eda/*
+outputs/preprocessing/*
 
 # Keep folders
 !data/raw/.gitkeep
@@ -33,6 +34,7 @@ outputs/eda/*
 !outputs/logs/.gitkeep
 !outputs/checkpoints/.gitkeep
 !outputs/eda/.gitkeep
+!outputs/preprocessing/.gitkeep
 
 # OS / IDE
 .DS_Store

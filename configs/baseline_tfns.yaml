@@ -1,17 +1,17 @@
 experiment:
-  name: baseline_fpb
+  name: baseline_tfns
 
 data:
-  train_path: data/processed/fpb/train.csv
+  train_path: data/processed/tfns/train.csv
   text_column: text
   label_column: label
   eval_sets:
-    - name: fpb_val
-      path: data/processed/fpb/val.csv
-    - name: fpb_test
-      path: data/processed/fpb/test.csv
+    - name: tfns_val
+      path: data/processed/tfns/val.csv
     - name: tfns_test
       path: data/processed/tfns/test.csv
+    - name: fpb_test
+      path: data/processed/fpb/test.csv
 
 model:
   max_features: 20000

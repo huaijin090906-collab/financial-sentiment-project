@@ -12,7 +12,7 @@ def load_fpb_raw(path_str: str) -> pd.DataFrame:
     path = resolve_path(path_str)
     records: list[dict[str, object]] = []
 
-    with path.open("r", encoding="utf-8", errors="replace") as handle:
+    with path.open("r", encoding="latin-1") as handle:
         for line_number, raw_line in enumerate(handle, start=1):
             line = raw_line.rstrip("\n")
             if not line.strip():
