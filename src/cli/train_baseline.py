@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from tqdm.auto import tqdm
 
 from src.data.dataset import load_labeled_csv
 from src.evaluation.metrics import (
@@ -139,26 +138,19 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
     output_dirs = _prepare_output_dirs(output_config)
     run_dirs = _run_dirs(output_dirs, run_name)
 
-    tqdm.write("=" * 80)
-    tqdm.write(
+    print("=" * 80)
+    print(
         f"Starting statistical baseline - Model: {_format_model_title(model_type)}"
     )
-    tqdm.write(
+    print(
         f"Train set: {Path(data_config['train_path']).parent.name.upper()} | "
         f"Train size: {len(train_frame)} | Eval sets: {[spec['name'] for spec in eval_sets]}"
     )
-    tqdm.write(f"Model config: {model_config}")
-    tqdm.write("=" * 80)
-
-    with tqdm(
-        total=1,
-        desc="Fitting",
-        dynamic_ncols=True,
-        leave=True,
-        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
-    ) as fit_bar:
-        pipeline.fit(train_frame["text"], train_frame["label"])
-        fit_bar.update(1)
+    print(f"Model config: {model_config}")
+    print("=" * 80)
+    print("Fitting model...")
+    pipeline.fit(train_frame["text"], train_frame["label"])
+    print("Fitting complete.")
 
     config_snapshot_path = run_dirs["logs"] / f"{run_name}_config.yaml"
     dump_yaml_config(
@@ -183,80 +175,74 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
     }
 
     eval_summary_rows: list[dict[str, Any]] = []
-    with tqdm(
-        total=len(eval_sets),
-        desc="Evaluating",
-        dynamic_ncols=True,
-        leave=True,
-        bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
-    ) as eval_bar:
-        for eval_spec in eval_sets:
-            eval_name = eval_spec["name"]
-            eval_frame = load_labeled_csv(
-                eval_spec["path"],
-                text_column=text_column,
-                label_column=label_column,
-                label_map=label_map,
-            )
-            predictions = pipeline.predict(eval_frame["text"])
-            score_frame = _build_score_frame(pipeline, eval_frame["text"])
+    print(f"Evaluating {len(eval_sets)} dataset(s)...")
+    for idx, eval_spec in enumerate(eval_sets, start=1):
+        eval_name = eval_spec["name"]
+        print(f"[{idx}/{len(eval_sets)}] Evaluating {eval_name}...")
+        eval_frame = load_labeled_csv(
+            eval_spec["path"],
+            text_column=text_column,
+            label_column=label_column,
+            label_map=label_map,
+        )
+        predictions = pipeline.predict(eval_frame["text"])
+        score_frame = _build_score_frame(pipeline, eval_frame["text"])
 
-            prediction_frame = pd.concat(
-                [
-                    eval_frame.reset_index(drop=True),
-                    pd.DataFrame({"prediction": predictions}),
-                    score_frame.reset_index(drop=True),
-                ],
-                axis=1,
-            )
+        prediction_frame = pd.concat(
+            [
+                eval_frame.reset_index(drop=True),
+                pd.DataFrame({"prediction": predictions}),
+                score_frame.reset_index(drop=True),
+            ],
+            axis=1,
+        )
 
-            prediction_path = output_dirs["predictions"] / f"{run_name}__{eval_name}.csv"
-            prediction_frame.to_csv(prediction_path, index=False)
+        prediction_path = output_dirs["predictions"] / f"{run_name}__{eval_name}.csv"
+        prediction_frame.to_csv(prediction_path, index=False)
 
-            metric_payload = compute_classification_metrics(
-                eval_frame["label"].tolist(),
-                list(predictions),
-            )
-            metric_payload["size"] = int(len(eval_frame))
-            metric_payload["path"] = str(resolve_path(eval_spec["path"]))
-            metric_payload["prediction_path"] = str(prediction_path)
+        metric_payload = compute_classification_metrics(
+            eval_frame["label"].tolist(),
+            list(predictions),
+        )
+        metric_payload["size"] = int(len(eval_frame))
+        metric_payload["path"] = str(resolve_path(eval_spec["path"]))
+        metric_payload["prediction_path"] = str(prediction_path)
 
-            confusion_path = output_dirs["metrics"] / f"{run_name}__{eval_name}_confusion_matrix.csv"
-            confusion_frame = build_confusion_matrix_frame(
-                eval_frame["label"].tolist(),
-                list(predictions),
-            )
-            confusion_frame.to_csv(confusion_path, index=True)
-            metric_payload["confusion_matrix_path"] = str(confusion_path)
+        confusion_path = output_dirs["metrics"] / f"{run_name}__{eval_name}_confusion_matrix.csv"
+        confusion_frame = build_confusion_matrix_frame(
+            eval_frame["label"].tolist(),
+            list(predictions),
+        )
+        confusion_frame.to_csv(confusion_path, index=True)
+        metric_payload["confusion_matrix_path"] = str(confusion_path)
 
-            figure_path = run_dirs["figures"] / f"{run_name}__{eval_name}_confusion_matrix.png"
-            plot_confusion_matrix_heatmap(
-                confusion_frame,
-                _format_eval_title(model_type, data_config["train_path"], eval_name),
-                figure_path,
-            )
-            metric_payload["confusion_figure_path"] = str(figure_path)
+        figure_path = run_dirs["figures"] / f"{run_name}__{eval_name}_confusion_matrix.png"
+        plot_confusion_matrix_heatmap(
+            confusion_frame,
+            _format_eval_title(model_type, data_config["train_path"], eval_name),
+            figure_path,
+        )
+        metric_payload["confusion_figure_path"] = str(figure_path)
 
-            aggregate_metrics["eval_sets"][eval_name] = metric_payload
-            eval_summary_rows.append(
-                {
-                    "eval_set": eval_name,
-                    "accuracy": metric_payload["accuracy"],
-                    "macro_f1": metric_payload["macro_f1"],
-                    "weighted_f1": metric_payload["weighted_f1"],
-                    "macro_precision": metric_payload["macro_precision"],
-                    "weighted_precision": metric_payload["weighted_precision"],
-                    "macro_recall": metric_payload["macro_recall"],
-                    "weighted_recall": metric_payload["weighted_recall"],
-                }
-            )
-            tqdm.write(
-                "  "
-                + f"{eval_name}: accuracy={metric_payload['accuracy']:.4f} "
-                + f"macro_f1={metric_payload['macro_f1']:.4f} "
-                + f"weighted_f1={metric_payload['weighted_f1']:.4f}"
-            )
-            eval_bar.update(1)
+        aggregate_metrics["eval_sets"][eval_name] = metric_payload
+        eval_summary_rows.append(
+            {
+                "eval_set": eval_name,
+                "accuracy": metric_payload["accuracy"],
+                "macro_f1": metric_payload["macro_f1"],
+                "weighted_f1": metric_payload["weighted_f1"],
+                "macro_precision": metric_payload["macro_precision"],
+                "weighted_precision": metric_payload["weighted_precision"],
+                "macro_recall": metric_payload["macro_recall"],
+                "weighted_recall": metric_payload["weighted_recall"],
+            }
+        )
+        print(
+            "  "
+            + f"{eval_name}: accuracy={metric_payload['accuracy']:.4f} "
+            + f"macro_f1={metric_payload['macro_f1']:.4f} "
+            + f"weighted_f1={metric_payload['weighted_f1']:.4f}"
+        )
 
     eval_summary_frame = pd.DataFrame(eval_summary_rows)
     eval_summary_csv_path = run_dirs["logs"] / f"{run_name}_eval_summary.csv"

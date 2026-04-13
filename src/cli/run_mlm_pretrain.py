@@ -7,6 +7,7 @@ from typing import Any
 
 import pandas as pd
 from transformers import AutoTokenizer, Trainer
+from transformers.trainer_callback import PrinterCallback
 
 from src.data.dataset import load_labeled_csv
 from src.models.mlm_pretrain import (
@@ -15,6 +16,7 @@ from src.models.mlm_pretrain import (
     build_mlm_model,
     build_mlm_training_args,
 )
+from src.models.transformer import BlockProgressCallback
 from src.utils.config import dump_yaml_config, load_yaml_config
 from src.utils.paths import ensure_dir, resolve_path
 
@@ -83,7 +85,9 @@ def run_pretraining(config: dict[str, Any]) -> dict[str, Any]:
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
         data_collator=data_collator,
+        callbacks=[BlockProgressCallback(description="MLM Pretraining")],
     )
+    trainer.remove_callback(PrinterCallback)
 
     trainer.train()
 

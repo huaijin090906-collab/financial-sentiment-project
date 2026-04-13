@@ -61,7 +61,7 @@ def build_mlm_training_args(
         fp16=training_config.get("fp16", torch.cuda.is_available()),
         report_to="none",
         seed=training_config.get("seed", 42),
-        disable_tqdm=False,
+        disable_tqdm=training_config.get("disable_tqdm", True),
     )
 
 

@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-import math
+import sys
+import time
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset
-from tqdm.auto import tqdm
+from torch.utils.data import DataLoader, Dataset
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
     EarlyStoppingCallback,
     TrainerCallback,
-    Trainer,
     TrainingArguments,
 )
 
@@ -114,17 +113,19 @@ def compute_hf_metrics(eval_pred: Any) -> dict[str, float]:
 
 
 class BlockProgressCallback(TrainerCallback):
-    """Epoch-level tqdm progress bars with clean summaries."""
+    """Single-line console progress updates for notebook-friendly training logs."""
 
-    def __init__(self, description: str = "Training") -> None:
+    def __init__(self, description: str = "Training", min_interval_seconds: float = 0.5) -> None:
         self.description = description
-        self.progress_bar: tqdm | None = None
+        self.min_interval_seconds = min_interval_seconds
         self.current_step = 0
         self.epoch_start_step = 0
         self.current_epoch_index = 0
         self.total_epochs = 0
         self.total_steps = 0
         self.latest_train_logs: dict[str, Any] = {}
+        self.last_render_time = 0.0
+        self.last_line_length = 0
 
     def _epoch_total_steps(self) -> int:
         if self.total_epochs <= 0:
@@ -134,48 +135,63 @@ class BlockProgressCallback(TrainerCallback):
         epoch_idx = max(self.current_epoch_index - 1, 0)
         return max(base_steps + (1 if epoch_idx < remainder else 0), 1)
 
-    def _close_bar(self) -> None:
-        if self.progress_bar is not None:
-            self.progress_bar.close()
-            self.progress_bar = None
+    def _render_line(self, message: str, *, finalize: bool = False) -> None:
+        padded = message.ljust(self.last_line_length)
+        sys.stdout.write("\r" + padded)
+        if finalize:
+            sys.stdout.write("\n")
+            self.last_line_length = 0
+        else:
+            sys.stdout.flush()
+            self.last_line_length = len(padded)
+
+    def _build_progress_message(self, state: Any) -> str:
+        epoch_steps = self._epoch_total_steps()
+        epoch_step = max(int(state.global_step) - self.epoch_start_step, 0)
+        percent = 100.0 * int(state.global_step) / max(self.total_steps, 1)
+        message = (
+            f"{self.description} | epoch {self.current_epoch_index}/{self.total_epochs}"
+            f" | step {epoch_step}/{epoch_steps}"
+            f" | total {int(state.global_step)}/{self.total_steps}"
+            f" | {percent:5.1f}%"
+        )
+        if "loss" in self.latest_train_logs:
+            message += f" | loss {self.latest_train_logs['loss']:.4f}"
+        return message
 
     def on_train_begin(self, args: TrainingArguments, state: Any, control: Any, **kwargs: Any) -> None:
         self.total_steps = int(state.max_steps or 0)
-        self.total_epochs = max(int(math.ceil(args.num_train_epochs)), 1)
+        self.total_epochs = max(int(round(args.num_train_epochs)), 1)
         self.current_step = 0
         self.epoch_start_step = 0
         self.current_epoch_index = 0
         self.latest_train_logs = {}
-        tqdm.write("=" * 80)
-        tqdm.write(f"Starting transformer fine-tuning: {self.description}")
-        tqdm.write(
+        self.last_render_time = 0.0
+        self.last_line_length = 0
+        print("=" * 80)
+        print(f"Starting: {self.description}")
+        print(
             f"Training config: epochs={self.total_epochs}, "
             f"batch_size={args.per_device_train_batch_size}, lr={args.learning_rate:.2e}"
         )
-        tqdm.write("=" * 80)
+        print("=" * 80)
 
     def on_epoch_begin(self, args: TrainingArguments, state: Any, control: Any, **kwargs: Any) -> None:
-        self._close_bar()
         self.current_epoch_index += 1
         self.epoch_start_step = int(state.global_step)
-        self.progress_bar = tqdm(
-            total=self._epoch_total_steps(),
-            desc="Training",
-            dynamic_ncols=True,
-            leave=True,
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
-        )
+        self.last_render_time = 0.0
+        self._render_line(self._build_progress_message(state))
 
     def on_step_end(self, args: TrainingArguments, state: Any, control: Any, **kwargs: Any) -> None:
-        if self.progress_bar is None:
-            return
         target_step = int(state.global_step)
-        progress_target = max(target_step - self.epoch_start_step, 0)
-        current_progress = self.progress_bar.n
-        step_delta = max(progress_target - current_progress, 0)
-        if step_delta:
-            self.progress_bar.update(step_delta)
-            self.current_step = target_step
+        if target_step <= self.current_step:
+            return
+        self.current_step = target_step
+        now = time.monotonic()
+        if now - self.last_render_time < self.min_interval_seconds and target_step < self.total_steps:
+            return
+        self.last_render_time = now
+        self._render_line(self._build_progress_message(state))
 
     def on_log(self, args: TrainingArguments, state: Any, control: Any, logs: dict[str, Any] | None = None, **kwargs: Any) -> None:
         if not logs:
@@ -186,6 +202,7 @@ class BlockProgressCallback(TrainerCallback):
     def on_evaluate(self, args: TrainingArguments, state: Any, control: Any, metrics: dict[str, Any] | None = None, **kwargs: Any) -> None:
         if not metrics:
             return
+        self._render_line(self._build_progress_message(state), finalize=True)
         train_loss = self.latest_train_logs.get("loss")
         summary_parts = [f"Epoch {self.current_epoch_index}/{self.total_epochs}"]
         if train_loss is not None:
@@ -198,13 +215,11 @@ class BlockProgressCallback(TrainerCallback):
             summary_parts.append(f"Macro-F1: {metrics['eval_macro_f1']:.4f}")
         if "eval_weighted_f1" in metrics:
             summary_parts.append(f"Weighted-F1: {metrics['eval_weighted_f1']:.4f}")
-        tqdm.write("  " + " - ".join(summary_parts))
-
-    def on_epoch_end(self, args: TrainingArguments, state: Any, control: Any, **kwargs: Any) -> None:
-        self._close_bar()
+        print("  " + " | ".join(summary_parts))
 
     def on_train_end(self, args: TrainingArguments, state: Any, control: Any, **kwargs: Any) -> None:
-        self._close_bar()
+        if self.last_line_length:
+            self._render_line(self._build_progress_message(state), finalize=True)
 
 
 def predict_from_model(
@@ -212,9 +227,22 @@ def predict_from_model(
     dataset: SentimentDataset,
     batch_size: int = 32,
 ) -> tuple[list[str], np.ndarray]:
-    trainer = Trainer(model=model)
-    output = trainer.predict(dataset)
-    logits = output.predictions
+    device = next(model.parameters()).device
+    dataloader = DataLoader(dataset, batch_size=batch_size)
+    logits_batches: list[torch.Tensor] = []
+
+    model.eval()
+    with torch.no_grad():
+        for batch in dataloader:
+            batch = {
+                key: value.to(device)
+                for key, value in batch.items()
+                if key != "labels"
+            }
+            outputs = model(**batch)
+            logits_batches.append(outputs.logits.detach().cpu())
+
+    logits = torch.cat(logits_batches, dim=0).numpy()
     probabilities = torch.softmax(torch.tensor(logits), dim=-1).numpy()
     predicted_ids = np.argmax(logits, axis=-1)
     predicted_labels = [ID2LABEL[pid] for pid in predicted_ids]
