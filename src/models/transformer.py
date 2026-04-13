@@ -6,10 +6,12 @@ import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
+from tqdm.auto import tqdm
 from transformers import (
     AutoModelForSequenceClassification,
     AutoTokenizer,
     EarlyStoppingCallback,
+    TrainerCallback,
     Trainer,
     TrainingArguments,
 )
@@ -87,18 +89,19 @@ def build_training_args(
         fp16=training_config.get("fp16", torch.cuda.is_available()),
         report_to="none",
         seed=training_config.get("seed", 42),
-        disable_tqdm=False,
+        disable_tqdm=training_config.get("disable_tqdm", True),
     )
 
 
 def compute_hf_metrics(eval_pred: Any) -> dict[str, float]:
     """Metric function compatible with HuggingFace Trainer."""
-    from sklearn.metrics import f1_score
+    from sklearn.metrics import accuracy_score, f1_score
 
     logits, label_ids = eval_pred
     predictions = np.argmax(logits, axis=-1)
     labels = list(range(NUM_LABELS))
     return {
+        "accuracy": float(accuracy_score(label_ids, predictions)),
         "macro_f1": float(
             f1_score(label_ids, predictions, labels=labels, average="macro")
         ),
@@ -106,6 +109,68 @@ def compute_hf_metrics(eval_pred: Any) -> dict[str, float]:
             f1_score(label_ids, predictions, labels=labels, average="weighted")
         ),
     }
+
+
+class BlockProgressCallback(TrainerCallback):
+    """Custom tqdm-based progress display with clear progress bars."""
+
+    def __init__(self, description: str = "Training") -> None:
+        self.description = description
+        self.progress_bar: tqdm | None = None
+        self.current_step = 0
+
+    def on_train_begin(self, args: TrainingArguments, state: Any, control: Any, **kwargs: Any) -> None:
+        total_steps = int(state.max_steps or 0)
+        self.progress_bar = tqdm(
+            total=total_steps,
+            desc=self.description,
+            dynamic_ncols=True,
+            leave=True,
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
+        )
+        self.current_step = 0
+
+    def on_step_end(self, args: TrainingArguments, state: Any, control: Any, **kwargs: Any) -> None:
+        if self.progress_bar is None:
+            return
+        target_step = int(state.global_step)
+        step_delta = max(target_step - self.current_step, 0)
+        if step_delta:
+            self.progress_bar.update(step_delta)
+            self.current_step = target_step
+
+    def on_log(self, args: TrainingArguments, state: Any, control: Any, logs: dict[str, Any] | None = None, **kwargs: Any) -> None:
+        if self.progress_bar is None or not logs:
+            return
+
+        postfix: dict[str, str] = {}
+        if "loss" in logs:
+            postfix["loss"] = f"{logs['loss']:.4f}"
+        if "learning_rate" in logs:
+            postfix["lr"] = f"{logs['learning_rate']:.2e}"
+        if postfix:
+            self.progress_bar.set_postfix(postfix)
+
+    def on_evaluate(self, args: TrainingArguments, state: Any, control: Any, metrics: dict[str, Any] | None = None, **kwargs: Any) -> None:
+        if not metrics:
+            return
+
+        summary_parts = []
+        if "eval_loss" in metrics:
+            summary_parts.append(f"eval_loss={metrics['eval_loss']:.4f}")
+        if "eval_accuracy" in metrics:
+            summary_parts.append(f"eval_acc={metrics['eval_accuracy']:.4f}")
+        if "eval_macro_f1" in metrics:
+            summary_parts.append(f"eval_macro_f1={metrics['eval_macro_f1']:.4f}")
+        if "eval_weighted_f1" in metrics:
+            summary_parts.append(f"eval_weighted_f1={metrics['eval_weighted_f1']:.4f}")
+        if summary_parts:
+            tqdm.write(" | ".join(summary_parts))
+
+    def on_train_end(self, args: TrainingArguments, state: Any, control: Any, **kwargs: Any) -> None:
+        if self.progress_bar is not None:
+            self.progress_bar.close()
+            self.progress_bar = None
 
 
 def predict_from_model(

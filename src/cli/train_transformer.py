@@ -6,17 +6,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 from transformers import EarlyStoppingCallback
 
-from src.data.dataset import CANONICAL_LABELS, load_labeled_csv
+from src.data.dataset import load_labeled_csv
 from src.evaluation.metrics import (
     build_confusion_matrix_frame,
     compute_classification_metrics,
 )
-from src.evaluation.plots import plot_confusion_matrix_heatmap
+from src.evaluation.plots import (
+    plot_confusion_matrix_heatmap,
+    plot_training_loss_curve,
+    plot_training_metric_curve,
+)
 from src.models.transformer import (
+    BlockProgressCallback,
     ID2LABEL,
     SentimentDataset,
     build_model,
@@ -71,6 +75,18 @@ def _format_eval_title(model_name: str, train_path: str, eval_name: str) -> str:
     return f"{_format_model_title(model_name)} | {train_domain} Train | {eval_title}"
 
 
+def _format_training_title(model_name: str, train_path: str, suffix: str) -> str:
+    train_domain = Path(train_path).parent.name.upper()
+    return f"{_format_model_title(model_name)} | {train_domain} Train | {suffix}"
+
+
+def _run_dirs(output_dirs: dict[str, Path], run_name: str) -> dict[str, Path]:
+    return {
+        "figures": ensure_dir(output_dirs["figures"] / run_name),
+        "logs": ensure_dir(output_dirs["logs"] / run_name),
+    }
+
+
 def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
     data_config = config.get("data", {})
     model_config = config.get("model", {})
@@ -115,6 +131,7 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
 
     run_name = _get_run_name(config)
     output_dirs = _prepare_output_dirs(output_config)
+    run_dirs = _run_dirs(output_dirs, run_name)
 
     hf_output_dir = str(output_dirs["checkpoints"] / run_name)
     training_args = build_training_args(hf_output_dir, training_config)
@@ -125,6 +142,11 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
     patience = training_config.get("early_stopping_patience")
     if patience:
         callbacks.append(EarlyStoppingCallback(early_stopping_patience=patience))
+    callbacks.append(
+        BlockProgressCallback(
+            description=f"FT {_format_model_title(model_name)}"
+        )
+    )
 
     trainer = Trainer(
         model=model,
@@ -137,10 +159,26 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
 
     trainer.train()
 
-    config_snapshot_path = output_dirs["logs"] / f"{run_name}_config.yaml"
+    config_snapshot_path = run_dirs["logs"] / f"{run_name}_config.yaml"
     dump_yaml_config(
         {key: value for key, value in config.items() if key != "_config_path"},
         config_snapshot_path,
+    )
+
+    log_history_path = run_dirs["logs"] / f"{run_name}_trainer_log_history.json"
+    _save_json({"log_history": trainer.state.log_history}, log_history_path)
+
+    loss_curve_path = run_dirs["figures"] / f"{run_name}_loss_curve.png"
+    metric_curve_path = run_dirs["figures"] / f"{run_name}_eval_metrics_curve.png"
+    plot_training_loss_curve(
+        trainer.state.log_history,
+        _format_training_title(model_name, data_config["train_path"], "Loss"),
+        loss_curve_path,
+    )
+    plot_training_metric_curve(
+        trainer.state.log_history,
+        _format_training_title(model_name, data_config["train_path"], "Eval Metrics"),
+        metric_curve_path,
     )
 
     best_model_dir = output_dirs["checkpoints"] / f"{run_name}_best"
@@ -155,6 +193,9 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
         "train_path": str(resolve_path(data_config["train_path"])),
         "config_path": config.get("_config_path"),
         "best_model_dir": str(best_model_dir),
+        "trainer_log_history_path": str(log_history_path),
+        "loss_curve_path": str(loss_curve_path),
+        "metric_curve_path": str(metric_curve_path),
         "eval_sets": {},
     }
 
@@ -211,7 +252,7 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
         confusion_frame.to_csv(confusion_path, index=True)
         metric_payload["confusion_matrix_path"] = str(confusion_path)
 
-        figure_path = output_dirs["figures"] / f"{run_name}__{eval_name}_confusion_matrix.png"
+        figure_path = run_dirs["figures"] / f"{run_name}__{eval_name}_confusion_matrix.png"
         plot_confusion_matrix_heatmap(
             confusion_frame,
             _format_eval_title(model_name, data_config["train_path"], eval_name),
@@ -237,6 +278,8 @@ def main() -> None:
     print(f"Model: {results['model_name']}")
     print(f"Train size: {results['train_size']}")
     print(f"Best model saved to: {results['best_model_dir']}")
+    print(f"Loss curve saved to: {results['loss_curve_path']}")
+    print(f"Eval metric curve saved to: {results['metric_curve_path']}")
     print(f"Metrics saved to: {results['metrics_path']}")
     for eval_name, payload in results["eval_sets"].items():
         print(
