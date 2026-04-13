@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
@@ -81,6 +82,7 @@ def build_training_args(
         warmup_ratio=training_config.get("warmup_ratio", 0.1),
         eval_strategy="epoch",
         save_strategy="epoch",
+        logging_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model="eval_macro_f1",
         greater_is_better=True,
@@ -112,65 +114,97 @@ def compute_hf_metrics(eval_pred: Any) -> dict[str, float]:
 
 
 class BlockProgressCallback(TrainerCallback):
-    """Custom tqdm-based progress display with clear progress bars."""
+    """Epoch-level tqdm progress bars with clean summaries."""
 
     def __init__(self, description: str = "Training") -> None:
         self.description = description
         self.progress_bar: tqdm | None = None
         self.current_step = 0
+        self.epoch_start_step = 0
+        self.current_epoch_index = 0
+        self.total_epochs = 0
+        self.total_steps = 0
+        self.latest_train_logs: dict[str, Any] = {}
+
+    def _epoch_total_steps(self) -> int:
+        if self.total_epochs <= 0:
+            return max(self.total_steps, 1)
+        base_steps = self.total_steps // self.total_epochs
+        remainder = self.total_steps % self.total_epochs
+        epoch_idx = max(self.current_epoch_index - 1, 0)
+        return max(base_steps + (1 if epoch_idx < remainder else 0), 1)
+
+    def _close_bar(self) -> None:
+        if self.progress_bar is not None:
+            self.progress_bar.close()
+            self.progress_bar = None
 
     def on_train_begin(self, args: TrainingArguments, state: Any, control: Any, **kwargs: Any) -> None:
-        total_steps = int(state.max_steps or 0)
+        self.total_steps = int(state.max_steps or 0)
+        self.total_epochs = max(int(math.ceil(args.num_train_epochs)), 1)
+        self.current_step = 0
+        self.epoch_start_step = 0
+        self.current_epoch_index = 0
+        self.latest_train_logs = {}
+        tqdm.write("=" * 80)
+        tqdm.write(f"Starting transformer fine-tuning: {self.description}")
+        tqdm.write(
+            f"Training config: epochs={self.total_epochs}, "
+            f"batch_size={args.per_device_train_batch_size}, lr={args.learning_rate:.2e}"
+        )
+        tqdm.write("=" * 80)
+
+    def on_epoch_begin(self, args: TrainingArguments, state: Any, control: Any, **kwargs: Any) -> None:
+        self._close_bar()
+        self.current_epoch_index += 1
+        self.epoch_start_step = int(state.global_step)
         self.progress_bar = tqdm(
-            total=total_steps,
-            desc=self.description,
+            total=self._epoch_total_steps(),
+            desc="Training",
             dynamic_ncols=True,
             leave=True,
-            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]",
+            bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]",
         )
-        self.current_step = 0
 
     def on_step_end(self, args: TrainingArguments, state: Any, control: Any, **kwargs: Any) -> None:
         if self.progress_bar is None:
             return
         target_step = int(state.global_step)
-        step_delta = max(target_step - self.current_step, 0)
+        progress_target = max(target_step - self.epoch_start_step, 0)
+        current_progress = self.progress_bar.n
+        step_delta = max(progress_target - current_progress, 0)
         if step_delta:
             self.progress_bar.update(step_delta)
             self.current_step = target_step
 
     def on_log(self, args: TrainingArguments, state: Any, control: Any, logs: dict[str, Any] | None = None, **kwargs: Any) -> None:
-        if self.progress_bar is None or not logs:
+        if not logs:
             return
-
-        postfix: dict[str, str] = {}
         if "loss" in logs:
-            postfix["loss"] = f"{logs['loss']:.4f}"
-        if "learning_rate" in logs:
-            postfix["lr"] = f"{logs['learning_rate']:.2e}"
-        if postfix:
-            self.progress_bar.set_postfix(postfix)
+            self.latest_train_logs = dict(logs)
 
     def on_evaluate(self, args: TrainingArguments, state: Any, control: Any, metrics: dict[str, Any] | None = None, **kwargs: Any) -> None:
         if not metrics:
             return
-
-        summary_parts = []
+        train_loss = self.latest_train_logs.get("loss")
+        summary_parts = [f"Epoch {self.current_epoch_index}/{self.total_epochs}"]
+        if train_loss is not None:
+            summary_parts.append(f"Train Loss: {train_loss:.4f}")
         if "eval_loss" in metrics:
-            summary_parts.append(f"eval_loss={metrics['eval_loss']:.4f}")
+            summary_parts.append(f"Eval Loss: {metrics['eval_loss']:.4f}")
         if "eval_accuracy" in metrics:
-            summary_parts.append(f"eval_acc={metrics['eval_accuracy']:.4f}")
+            summary_parts.append(f"Eval Acc: {metrics['eval_accuracy']:.4f}")
         if "eval_macro_f1" in metrics:
-            summary_parts.append(f"eval_macro_f1={metrics['eval_macro_f1']:.4f}")
+            summary_parts.append(f"Macro-F1: {metrics['eval_macro_f1']:.4f}")
         if "eval_weighted_f1" in metrics:
-            summary_parts.append(f"eval_weighted_f1={metrics['eval_weighted_f1']:.4f}")
-        if summary_parts:
-            tqdm.write(" | ".join(summary_parts))
+            summary_parts.append(f"Weighted-F1: {metrics['eval_weighted_f1']:.4f}")
+        tqdm.write("  " + " - ".join(summary_parts))
+
+    def on_epoch_end(self, args: TrainingArguments, state: Any, control: Any, **kwargs: Any) -> None:
+        self._close_bar()
 
     def on_train_end(self, args: TrainingArguments, state: Any, control: Any, **kwargs: Any) -> None:
-        if self.progress_bar is not None:
-            self.progress_bar.close()
-            self.progress_bar = None
+        self._close_bar()
 
 
 def predict_from_model(

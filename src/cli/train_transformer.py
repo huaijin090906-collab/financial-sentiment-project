@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 from transformers import EarlyStoppingCallback
+from transformers.trainer_callback import PrinterCallback
 
 from src.data.dataset import load_labeled_csv
 from src.evaluation.metrics import (
@@ -156,6 +157,7 @@ def run_experiment(config: dict[str, Any]) -> dict[str, Any]:
         compute_metrics=compute_hf_metrics,
         callbacks=callbacks,
     )
+    trainer.remove_callback(PrinterCallback)
 
     trainer.train()
 
