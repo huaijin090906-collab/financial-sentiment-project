@@ -112,3 +112,38 @@ def plot_training_metric_curve(
     plt.tight_layout()
     plt.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close()
+
+
+def plot_eval_metric_summary(
+    metric_frame: pd.DataFrame,
+    title: str,
+    output_path: Path,
+) -> None:
+    if metric_frame.empty:
+        return
+
+    plot_frame = metric_frame.melt(
+        id_vars=["eval_set"],
+        value_vars=["accuracy", "macro_f1", "weighted_f1"],
+        var_name="metric",
+        value_name="score",
+    )
+
+    label_map = {
+        "accuracy": "Accuracy",
+        "macro_f1": "Macro-F1",
+        "weighted_f1": "Weighted-F1",
+    }
+    plot_frame["metric"] = plot_frame["metric"].map(label_map)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.figure(figsize=(9, 5))
+    sns.barplot(data=plot_frame, x="eval_set", y="score", hue="metric")
+    plt.title(title)
+    plt.xlabel("Eval Set")
+    plt.ylabel("Score")
+    plt.ylim(0.0, 1.0)
+    plt.legend(title="Metric")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close()

@@ -65,9 +65,12 @@ def _result_rows(result: dict[str, object]) -> list[dict[str, object]]:
                 "weighted_precision": payload["weighted_precision"],
                 "macro_recall": payload["macro_recall"],
                 "weighted_recall": payload["weighted_recall"],
+                "eval_summary_csv_path": result["eval_summary_csv_path"],
+                "eval_summary_figure_path": result["eval_summary_figure_path"],
                 "metrics_path": result["metrics_path"],
                 "prediction_path": payload["prediction_path"],
                 "confusion_matrix_path": payload["confusion_matrix_path"],
+                "confusion_figure_path": payload["confusion_figure_path"],
             }
         )
     return rows
