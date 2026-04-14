@@ -12,6 +12,8 @@ from transformers import (
     TrainingArguments,
 )
 
+from src.models.transformer import configure_hf_loading_output
+
 
 class PlainTextDataset(Dataset):
     def __init__(
@@ -36,6 +38,7 @@ class PlainTextDataset(Dataset):
 
 
 def build_mlm_model(model_name: str) -> AutoModelForMaskedLM:
+    configure_hf_loading_output()
     return AutoModelForMaskedLM.from_pretrained(model_name)
 
 

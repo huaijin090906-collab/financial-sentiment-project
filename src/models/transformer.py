@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import sys
 import time
+from contextlib import suppress
 from typing import Any
 
 import numpy as np
@@ -55,16 +57,35 @@ class SentimentDataset(Dataset):
 
 
 def build_tokenizer(model_name: str) -> AutoTokenizer:
+    configure_hf_loading_output()
     return AutoTokenizer.from_pretrained(model_name)
 
 
 def build_model(model_name: str) -> AutoModelForSequenceClassification:
+    configure_hf_loading_output()
     return AutoModelForSequenceClassification.from_pretrained(
         model_name,
         num_labels=NUM_LABELS,
         id2label=ID2LABEL,
         label2id=LABEL2ID,
     )
+
+
+def configure_hf_loading_output() -> None:
+    """Silence Hugging Face download/loading progress bars in notebooks."""
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
+
+    with suppress(Exception):
+        from huggingface_hub.utils import disable_progress_bars
+
+        disable_progress_bars()
+
+    with suppress(Exception):
+        from transformers.utils import logging as transformers_logging
+
+        transformers_logging.disable_progress_bar()
+        transformers_logging.set_verbosity_warning()
 
 
 def build_training_args(

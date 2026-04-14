@@ -16,7 +16,7 @@ from src.models.mlm_pretrain import (
     build_mlm_model,
     build_mlm_training_args,
 )
-from src.models.transformer import BlockProgressCallback
+from src.models.transformer import BlockProgressCallback, configure_hf_loading_output
 from src.utils.config import dump_yaml_config, load_yaml_config
 from src.utils.paths import ensure_dir, resolve_path
 
@@ -62,6 +62,7 @@ def run_pretraining(config: dict[str, Any]) -> dict[str, Any]:
 
     train_texts, val_texts = _load_texts(data_config)
 
+    configure_hf_loading_output()
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = build_mlm_model(model_name)
 
