@@ -1,0 +1,33 @@
+experiment:
+  name: bert_mlm_tfns
+model:
+  name: PLACEHOLDER_BERT_MLM_CHECKPOINT
+  max_length: 128
+data:
+  train_path: data/processed/tfns/train.csv
+  val_path: data/processed/tfns/val.csv
+  text_column: text
+  label_column: label
+  eval_sets:
+    - name: tfns_val
+      path: data/processed/tfns/val.csv
+    - name: tfns_test
+      path: data/processed/tfns/test.csv
+    - name: fpb_test
+      path: data/processed/fpb/test.csv
+training:
+  epochs: 4
+  train_batch_size: 16
+  eval_batch_size: 32
+  learning_rate: 2.0e-05
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  early_stopping_patience: 2
+  logging_steps: 50
+  seed: 42
+output:
+  metrics_dir: outputs/metrics/mlm_finetune_bert
+  predictions_dir: outputs/predictions/mlm_finetune_bert
+  figures_dir: outputs/figures/mlm_finetune_bert
+  logs_dir: outputs/logs/mlm_finetune_bert
+  checkpoints_dir: outputs/checkpoints/mlm_finetune_bert
