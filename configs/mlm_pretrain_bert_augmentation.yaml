@@ -1,0 +1,23 @@
+experiment:
+  name: mlm_pretrain_bert_augmentation
+model:
+  name: bert-base-uncased
+  max_length: 128
+  mlm_probability: 0.15
+data:
+  text_column: text
+  corpus_paths:
+    - data/financial_mlm_corpus_20000.csv
+  val_ratio: 0.05
+training:
+  epochs: 5
+  train_batch_size: 16
+  eval_batch_size: 32
+  learning_rate: 5.0e-05
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+  logging_steps: 50
+  seed: 42
+output:
+  checkpoints_dir: outputs/checkpoints/mlm_pretrain_bert_augmentation
+  logs_dir: outputs/logs/mlm_pretrain_bert_augmentation
